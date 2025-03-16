@@ -41,7 +41,7 @@ python train.py --model RGCN --data_platform 10XVisium --epochs 100 --hidden_siz
 RGCN extends standard GCNs by incorporating edge types, allowing it to model heterogeneous relationships between cells. In MoST-GNN, RGCN is used to process the three types of cell relationships (spatial, transcriptomic, and morphological) by:
 - Learning distinct transformation matrices for different types of edges
 - Aggregating information while considering relationship-specific interactions
-- Enhancing cell representations for downstream tasks such as cell-type classification and gene imputation
+- Enhancing cell representations for downstream tasks such as gene expression imputation
 
 Example usage:
 
