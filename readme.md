@@ -1,6 +1,6 @@
 # MoST-GNN
 
-MoST-GNN (Multi-Omics Spatial Transcriptomics Graph Neural Network) is a deep learning framework for spatial transcriptomics data analysis. This repository provides an implementation of MoST-GNN, which integrates spatial, transcriptomic, and morphological information to enhance cell-type classification and gene imputation.
+MoST-GNN (MoST-GNN: A Morphology and Spatial Transcriptomics-Informed Graph Neural Network for Accurate Gene Expression Imputation) is a deep learning framework for spatial transcriptomics data analysis. This repository provides an implementation of MoST-GNN, which integrates spatial, transcriptomic, and morphological information to enhance gene expression imputation.
 
 ## Overview
 
@@ -12,7 +12,6 @@ MoST-GNN utilizes heterogeneous message passing across multiple cell neighborhoo
 This framework enables:
 - Robust cell embedding using a Graph Neural Network (GNN)
 - Gene expression imputation for missing or low-quality spatial transcriptomics data
-- Improved spatial domain identification through joint information integration
 
 ## Framework
 
@@ -62,15 +61,6 @@ print(f"Test RMSE: {test_rmse}")
 
 ## Citation
 If you use MoST-GNN in your research, please cite our work:
-
-```bibtex
-@article{your_citation,
-  title={MoST-GNN: Multi-Omics Spatial Transcriptomics Graph Neural Network},
-  author={Your Name and Others},
-  journal={Your Journal},
-  year={2024}
-}
-```
 
 ## License
 This project is licensed under the MIT License.
