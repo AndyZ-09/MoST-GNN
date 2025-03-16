@@ -59,9 +59,6 @@ test_l1, test_cosine, test_rmse, test_bic = evaluate_with_batch(args, model, sam
 print(f"Test RMSE: {test_rmse}")
 ```
 
-## Citation
-If you use MoST-GNN in your research, please cite our work:
-
 ## License
 This project is licensed under the MIT License.
 
