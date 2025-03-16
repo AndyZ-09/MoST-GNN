@@ -15,7 +15,7 @@ This framework enables:
 
 ## Framework
 
-![MoST-GNN Framework](MoST-GNN.pdf)
+![MoST-GNN Framework](MoST-GNN.png)
 
 The above figure illustrates the framework of MoST-GNN. It highlights the integration of different types of relationships among cells and the heterogeneous message-passing mechanism used in the model.
 
