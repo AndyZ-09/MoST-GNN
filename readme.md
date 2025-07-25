@@ -33,21 +33,26 @@ data, val_mask, test_mask, x, original_x = prepare_data(data_platform="10XVisium
 Train the MoST-GNN model using `train.py`. Example:
 
 ```bash
-python train.py --model RGCN --data_platform 10XVisium --epochs 100 --hidden_size 64
+python train.py --model RGTN --data_platform 10XVisium --epochs 100 --hidden_size 64
 ```
 
-### 3. RGCN (Relational Graph Convolutional Network)
+### 3. RGTN (Relational Graph Transformer Network)
 
-RGCN extends standard GCNs by incorporating edge types, allowing it to model heterogeneous relationships between cells. In MoST-GNN, RGCN is used to process the three types of cell relationships (spatial, transcriptomic, and morphological) by:
-- Learning distinct transformation matrices for different types of edges
-- Aggregating information while considering relationship-specific interactions
-- Enhancing cell representations for downstream tasks such as gene expression imputation
+RGTN extends traditional GNNs by incorporating a **multi-head attention mechanism** to dynamically learn the significance of individual neighbors and distinct relation types during message passing. It specifically addresses heterogeneous graphs by:
+- Employing **relation-specific query, key, and value projections** for robust message formulation.
+- Utilizing **multi-head relational attention** to capture diverse dependencies within each relationship type.
+- Incorporating **semantic-level attention**, which dynamically learns the relative importance of each relation type (spatial, transcriptomic, morphological) for each node.
+- Enhancing node representations with **residual connections** and **layer normalization** for stable training and deeper architectures.
+
+This sophisticated aggregation mechanism enables RGTN to effectively integrate multi-modal information, leading to highly accurate cell representations for gene expression imputation.
 
 Example usage:
 
 ```python
-from model import MultiLayerRGCN
-model = MultiLayerRGCN(feature_size=128, hidden_size=64, output_size=128, num_relations=3, num_layers=2)
+from model import MultiLayerRGTN
+# Assuming feature_size is the input dimension of gene expression,
+# output_size is the dimension of the final node embedding before the reconstruction layer.
+model = MultiLayerRGTN(feature_size=128, hidden_size=64, output_size=128, num_relations=3, num_layers=2, num_heads=8)
 ```
 
 ### 4. Evaluation
