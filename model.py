@@ -12,9 +12,12 @@ from torch_sparse import SparseTensor, set_diag
 from torch_geometric.nn import GCNConv, GINConv, GATConv, SAGEConv, TransformerConv
 from torch.nn import Sequential as Seq, Linear as Lin, ReLU
 from torch_geometric.nn.conv import MessagePassing
-from torch_geometric.utils import remove_self_loops, add_self_loops, softmax
+from torch_geometric.utils import remove_self_loops, add_self_loops, softmax, degree
 from torch_geometric.typing import (OptPairTensor, Adj, Size, NoneType,
                                     OptTensor)
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 from torch_geometric.nn import RGCNConv
 
@@ -510,4 +513,176 @@ class STAGATE(torch.nn.Module):
 
         return h4
 
+class RGTNConv(MessagePassing):
+    def __init__(self, in_channels, out_channels, num_relations, num_heads=8, dropout=0.5, **kwargs):
+        super(RGTNConv, self).__init__(aggr='add', **kwargs)
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.num_relations = num_relations
+        self.num_heads = num_heads
+        self.head_dim = out_channels // num_heads
+        self.dropout = dropout
+
+        # Check if out_channels is divisible by num_heads
+        if self.head_dim * num_heads != out_channels:
+            raise ValueError(f"out_channels ({out_channels}) must be divisible by num_heads ({num_heads})")
+
+        # Parameters for Query, Key, Value projections for each relation and head
+        # These are shared across nodes, but distinct for each relation and head
+        self.W_Q = nn.Parameter(torch.Tensor(num_relations, num_heads, in_channels, self.head_dim))
+        self.W_K = nn.Parameter(torch.Tensor(num_relations, num_heads, in_channels, self.head_dim))
+        self.W_V = nn.Parameter(torch.Tensor(num_relations, num_heads, in_channels, self.head_dim))
+
+        # Weight for concatenating attention heads for each relation
+        self.W_concat = nn.Parameter(torch.Tensor(num_relations, num_heads * self.head_dim, out_channels))
+
+        # Semantic-level attention (shared MLP)
+        # We'll use a simple linear layer here for MLP for simplicity,
+        # but you might want a more complex MLP for real scenarios.
+        self.semantic_mlp = nn.Linear(out_channels, 1) # Outputs a scalar for each relation
+
+        # Self-loop transformation
+        self.W_self = nn.Parameter(torch.Tensor(in_channels, out_channels))
+
+        # Layer Normalization
+        self.ln = nn.LayerNorm(out_channels)
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        # Initialize weights
+        nn.init.xavier_uniform_(self.W_Q)
+        nn.init.xavier_uniform_(self.W_K)
+        nn.init.xavier_uniform_(self.W_V)
+        nn.init.xavier_uniform_(self.W_concat)
+        nn.init.xavier_uniform_(self.W_self)
+        nn.init.xavier_uniform_(self.semantic_mlp.weight)
+        nn.init.zeros_(self.semantic_mlp.bias)
+
+
+    def forward(self, x, edge_index, edge_type):
+        """
+        x: Node features (N, in_channels)
+        edge_index: Tensor of shape (2, E) representing the graph edges.
+        edge_type: Tensor of shape (E,) representing the type of each edge.
+        """
+        num_nodes = x.size(0)
+        out = x.new_zeros(num_nodes, self.out_channels) # Initialize output features
+
+        # Store relation-specific aggregated messages for semantic attention
+        relation_messages = []
+
+        # Process each relation type separately
+        for r_id in range(self.num_relations):
+            # Filter edges for the current relation type
+            mask = (edge_type == r_id)
+            if not mask.any(): # Skip if no edges for this relation type
+                relation_messages.append(x.new_zeros(num_nodes, self.out_channels))
+                continue
+
+            relation_edge_index = edge_index[:, mask]
+
+            # Query, Key, Value for the current relation (across all heads)
+            # Unsqueeze for batching, then apply W_Q/K/V for all heads
+            # Shape: (N, num_heads, head_dim)
+            Q_r = (x @ self.W_Q[r_id]).transpose(0, 1) # (num_heads, N, head_dim)
+            K_r = (x @ self.W_K[r_id]).transpose(0, 1) # (num_heads, N, head_dim)
+            V_r = (x @ self.W_V[r_id]).transpose(0, 1) # (num_heads, N, head_dim)
+
+            # Perform message passing for the current relation
+            # We'll aggregate per-head messages and then concatenate
+            head_messages = []
+            for h_id in range(self.num_heads):
+                # Apply attention for current head
+                alpha = self.propagate(relation_edge_index, x=x, Q_r=Q_r[h_id], K_r=K_r[h_id])
+                # alpha shape (E_r,) corresponding to relation_edge_index
+                alpha = F.softmax(alpha, dim=0) # Normalize attention scores for each edge
+
+                # Aggregate values using normalized attention
+                # Message function needs to return alpha * V for source nodes
+                # Propagate will sum these messages to target nodes
+                m_r_h = self.propagate(relation_edge_index, x=x, alpha=alpha, V_r=V_r[h_id], size=(num_nodes, num_nodes))
+                head_messages.append(m_r_h)
+
+            # Concatenate and linearly transform messages from all heads for relation r
+            # Shape: (N, num_heads * head_dim) -> (N, out_channels)
+            M_r = torch.cat(head_messages, dim=-1) @ self.W_concat[r_id]
+            relation_messages.append(M_r)
+
+        # Semantic-level attention for modality fusion (Eq. 12)
+        # Stack relation messages: (num_relations, num_nodes, out_channels)
+        stacked_messages = torch.stack(relation_messages, dim=0)
+
+        # Compute semantic attention weights (softmax over relations for each node)
+        # MLP(M_i,r) -> (num_relations, num_nodes, 1)
+        beta = self.semantic_mlp(stacked_messages).squeeze(-1) # (num_relations, num_nodes)
+        beta = F.softmax(beta, dim=0) # Softmax across relations
+
+        # Aggregate relation-specific messages using semantic attention
+        # (num_relations, num_nodes, 1) * (num_relations, num_nodes, out_channels)
+        # Sum over relations: (num_nodes, out_channels)
+        semantically_aggregated_messages = (beta.unsqueeze(-1) * stacked_messages).sum(dim=0)
+
+        # Self-loop (Eq. 13)
+        self_loop_message = x @ self.W_self
+
+        # Node Update (Eq. 13)
+        # Add original node features (residual connection)
+        # Apply activation function (GELU)
+        updated_features = self.ln(x + F.gelu(self_loop_message + semantically_aggregated_messages))
+
+        return updated_features
+
+    def message(self, edge_index_i, edge_index_j, Q_r=None, K_r=None, alpha=None, V_r=None):
+        # Calculate attention scores (Eq. 10)
+        # This is for the first propagate call to get raw attention scores
+        if alpha is None and Q_r is not None and K_r is not None:
+            # Q_r: (N, head_dim), K_r: (N, head_dim)
+            # edge_index_i: target node indices, edge_index_j: source node indices
+            # Q_r[edge_index_i]: (E_r, head_dim) for target nodes
+            # K_r[edge_index_j]: (E_r, head_dim) for source nodes
+            energy = (Q_r[edge_index_i] * K_r[edge_index_j]).sum(dim=-1) / (self.head_dim ** 0.5)
+            return F.leaky_relu(energy)
+        # Aggregate values using pre-computed attention (Eq. 11)
+        elif alpha is not None and V_r is not None:
+            # alpha: (E_r,), V_r: (N, head_dim)
+            return alpha.unsqueeze(-1) * V_r[edge_index_j]
+        else:
+            raise ValueError("Invalid message function call.")
+
+    def aggregate(self, inputs, index, dim_size=None):
+        # This method defines how messages are aggregated.
+        # 'add' aggregation sums up all incoming messages.
+        return super().aggregate(inputs, index, dim_size)
+
+
+class MultiLayerRGTN(nn.Module):
+    def __init__(self, feature_size, hidden_size, output_size, num_relations, num_layers, num_heads=8):
+        super(MultiLayerRGTN, self).__init__()
+        self.num_layers = num_layers
+        self.layers = nn.ModuleList()
+
+        if num_layers == 1:
+            self.layers.append(RGTNConv(feature_size, output_size, num_relations=num_relations, num_heads=num_heads))
+        else:
+            # First layer
+            self.layers.append(RGTNConv(feature_size, hidden_size, num_relations=num_relations, num_heads=num_heads))
+            # Hidden layers
+            for _ in range(num_layers - 2):
+                self.layers.append(RGTNConv(hidden_size, hidden_size, num_relations=num_relations, num_heads=num_heads))
+            # Last layer
+            self.layers.append(RGTNConv(hidden_size, output_size, num_relations=num_relations, num_heads=num_heads))
+
+    def forward(self, x, edge_index, edge_type):
+        """
+        x: Initial node features (N, feature_size)
+        edge_index: Tensor of shape (2, E) representing the graph edges.
+        edge_type: Tensor of shape (E,) representing the type of each edge.
+        """
+        for i, layer in enumerate(self.layers):
+            x = layer(x, edge_index, edge_type)
+            # Apply dropout after hidden layers, but not the last one
+            if i != self.num_layers - 1:
+                x = F.dropout(x, p=0.5, training=self.training)
+        return x
     
