@@ -11,7 +11,7 @@ import scanpy as sc
 import matplotlib.pyplot as plt
 
 from data import prepare_data
-from model import PathGNN, MultiLayerGCN, MultiLayerGAT, MultiLayerGraphSAGE, MultiLayerTransformer, MultiLayerGIN, MultiLayerRGCN, STAGATE
+from model import PathGNN, MultiLayerGCN, MultiLayerGAT, MultiLayerGraphSAGE, MultiLayerTransformer, MultiLayerGIN, MultiLayerRGCN, STAGATE, MultiLayerRGTN # <-- ADDED MultiLayerRGTN
 from utils import NeighborSampler, evaluate_with_batch, evaluate_pathgnn, get_paths
 
 def train(args):
@@ -50,10 +50,18 @@ def train(args):
         assert args.use_heterogeneous_graph == True
         num_relations = args.use_spatial_graph + args.use_gene_graph + args.use_morphology_graph
         model = MultiLayerRGCN(feature_size=data.num_node_features, hidden_size=args.hidden_size, output_size=data.num_node_features, num_relations=num_relations, num_layers=args.num_layers)
+    elif args.model == "RGTN": # <-- ADDED RGTN MODEL SELECTION LOGIC
+        assert args.use_heterogeneous_graph == True
+        num_relations = args.use_spatial_graph + args.use_gene_graph + args.use_morphology_graph
+        # Assuming RGTN also takes num_heads as an argument, you might need to add it to argparse
+        # For now, using a default value or adding a new arg: --num_heads
+        model = MultiLayerRGTN(feature_size=data.num_node_features, hidden_size=args.hidden_size, 
+                               output_size=data.num_node_features, num_relations=num_relations, 
+                               num_layers=args.num_layers, num_heads=args.num_heads) # Assuming args.num_heads is defined
     elif args.model == "PathGNN":
         model = PathGNN(in_dim=data.num_node_features, hidden_dim=args.hidden_size, out_dim=data.num_node_features, dropout=args.dropout,
-                    num_layers=args.num_layers, num_paths=args.num_paths, path_length=args.path_length, num_edge_types=args.num_edge_types,\
-                    alpha=args.alpha, beta=args.beta, operator_type=args.operator_type)
+                        num_layers=args.num_layers, num_paths=args.num_paths, path_length=args.path_length, num_edge_types=args.num_edge_types,\
+                        alpha=args.alpha, beta=args.beta, operator_type=args.operator_type)
     else:
         raise NotImplementedError
 
@@ -83,14 +91,14 @@ def train(args):
     if args.model != "PathGNN":
         if args.use_heterogeneous_graph:
             sampler = NeighborSampler(edge_index=data.edge_index, sizes=[-1]*args.num_layers, edge_type=data.edge_type, \
-                                        device=device, batch_size=args.batch_size, shuffle=True)
+                                      device=device, batch_size=args.batch_size, shuffle=True)
             sampler_eval = NeighborSampler(edge_index=data.edge_index, sizes=[-1]*args.num_layers, edge_type=data.edge_type, \
-                                        device=device, batch_size=args.batch_size, shuffle=False)
+                                      device=device, batch_size=args.batch_size, shuffle=False)
         else:
             sampler = NeighborSampler(edge_index=data.edge_index, sizes=[-1]*args.num_layers, edge_type=None, \
-                                        device=device, batch_size=args.batch_size, shuffle=True)
+                                      device=device, batch_size=args.batch_size, shuffle=True)
             sampler_eval = NeighborSampler(edge_index=data.edge_index, sizes=[-1]*args.num_layers, edge_type=None, \
-                                        device=device, batch_size=args.batch_size, shuffle=False)
+                                      device=device, batch_size=args.batch_size, shuffle=False)
     
     for epoch in range(args.epochs):
         model.train()
@@ -136,7 +144,7 @@ def train(args):
                     adjs = [adj.to(device) for adj in adjs]
                     edge_indices = [adj.edge_index for adj in adjs]
                 # Compute the loss and gradients, and update the model parameters
-                if args.model == "RGCN":
+                if args.model == "RGCN" or args.model == "RGTN": # <-- ADDED RGTN HERE
                     edge_types = [adj.edge_type for adj in adjs]
                     logits = model(x, edge_indices, edge_types)
                 else:
@@ -272,7 +280,8 @@ if __name__ == "__main__":
     # parser.add_argument('--model', type=str, default='GAT')
     # parser.add_argument('--model', type=str, default='GraphSAGE')
     # parser.add_argument('--model', type=str, default='GraphTransformer')
-    parser.add_argument('--model', type=str, default='RGCN')
+    # parser.add_argument('--model', type=str, default='RGCN')
+    parser.add_argument('--model', type=str, default='RGTN') # <-- SET DEFAULT TO RGTN, OR KEEP RGCN AND SELECT RGTN via CLI
     parser.add_argument('--dropout', type=int, default=0.5)
     parser.add_argument('--num_layers', type=int, default=2)
     parser.add_argument('--num_paths', type=int, default=10)
@@ -293,6 +302,8 @@ if __name__ == "__main__":
     # parser.add_argument('--model', type=str, default='STAGATE')
     # parser.add_argument('--model', type=str, default='RGCN')
     parser.add_argument('--hidden_size', type=int, default=64)
+    # Added argument for num_heads for RGTN
+    parser.add_argument('--num_heads', type=int, default=8, help='Number of attention heads for RGTN model') # <-- ADDED num_heads ARG
     
     # Training process
     parser.add_argument('--device', type=str, default='cuda:1')
@@ -309,6 +320,6 @@ if __name__ == "__main__":
     
     # parser.add_argument('--print_time', type=bool, default=True)
     parser.add_argument('--print_time', type=bool, default=False)
-     
+      
     args = parser.parse_args()
     train(args)
